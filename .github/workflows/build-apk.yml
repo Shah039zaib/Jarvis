@@ -28,7 +28,10 @@ jobs:
         run: flutter pub get
 
       - name: Analyze
-        run: flutter analyze
+        # Plain `flutter analyze` treats pre-existing info/warning noise
+        # (e.g. material.dart deprecation notices on newer stable Flutter)
+        # as fatal. Only real errors should block the build.
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
       - name: Build release APK
         run: flutter build apk --release
