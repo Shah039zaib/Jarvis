@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'hermes_evolution_service.dart';
 
 /// A remembered fact or user preference that persists across sessions.
 class MemoryFact {
@@ -178,9 +177,10 @@ class ConversationalMemoryService extends ChangeNotifier {
     );
     _facts.insert(0, newFact);
     await _persistFacts();
-    try {
-      HermesEvolutionService.instance.evolveContext().catchError((_) {});
-    } catch (_) {}
+    // NOTE (BUG-2): do NOT auto-evolve the Hermes context here. Evolution
+    // used to run on every fact save and regenerated SOUL.md from a
+    // hardcoded template, wiping user edits. It now runs only on an
+    // explicit user action (Settings "Evolve" / "self evolve" command).
     return newFact;
   }
 
@@ -189,9 +189,7 @@ class ConversationalMemoryService extends ChangeNotifier {
     await init();
     _facts.removeWhere((f) => f.id == id);
     await _persistFacts();
-    try {
-      HermesEvolutionService.instance.evolveContext().catchError((_) {});
-    } catch (_) {}
+    // NOTE (BUG-2): no auto-evolve here either — see addFact above.
   }
 
   /// Privacy: Clears all stored long-term facts.

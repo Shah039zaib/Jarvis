@@ -812,8 +812,28 @@ class JarvisService extends ChangeNotifier {
     }
   }
 
-  /// Processes a voice command through JARVIS intelligence.
+  /// Handles a voice/text command. Never fails silently: this is invoked
+  /// via unawaited(...) from the overlay, so an uncaught error would leave
+  /// the user with zero feedback (the Summarize button appears dead).
+  /// Unexpected failures are surfaced as a spoken message instead.
   Future<void> processCommand(String command) async {
+    try {
+      await _processCommandInner(command);
+    } catch (e) {
+      final reply = 'Something went wrong while handling that, sir. ($e)';
+      _lastJarvisSpeech = reply;
+      _phase = JarvisPhase.speaking;
+      _statusMessage = 'COMMAND FAILED';
+      try {
+        notifyListeners();
+      } catch (_) {}
+      try {
+        await _voice.speak(reply);
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _processCommandInner(String command) async {
     _wakeUp();
 
     final trimmed = command.trim();
@@ -1707,6 +1727,22 @@ Mastering the boundless road.
         notifyListeners();
         await _voice.speak(standDownSpeech);
       }
+      await _startFollowUpListening();
+      return;
+    }
+
+    // 3f-2. Open Accessibility Settings — offered by the screen summarizer
+    // when the PrivateAgent Screen Control service is off (BUG-5).
+    if (lower.contains('accessibility settings') ||
+        lower.contains('open accessibility')) {
+      await _automation.openAccessibilitySettings();
+      const ack =
+          'Opening accessibility settings, sir. Please turn on PrivateAgent Screen Control under Downloaded apps.';
+      _lastJarvisSpeech = ack;
+      _phase = JarvisPhase.speaking;
+      _statusMessage = 'OPENING ACCESSIBILITY SETTINGS';
+      notifyListeners();
+      await _voice.speak(ack);
       await _startFollowUpListening();
       return;
     }

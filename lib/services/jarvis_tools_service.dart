@@ -6,6 +6,7 @@ import 'package:flutter_overlay_window/flutter_overlay_window.dart';
 import 'package:http/http.dart' as http;
 import 'package:intl/intl.dart';
 
+import '../models/screen_node.dart';
 import 'ai_service.dart';
 import 'app_launcher_service.dart';
 import 'app_usage_service.dart';
@@ -528,38 +529,130 @@ class JarvisToolsService {
   // 15. Superpowers: Screen & Article Summarization (Floating Arc Reactor)
   // ------------------------------------------------------------------
 
+  /// Message shown when the accessibility service is off. It names the
+  /// exact setting to enable ("PrivateAgent Screen Control" under
+  /// Settings → Accessibility) instead of the old generic
+  /// "Unable to analyze the foreground screen article" text.
+  static const _serviceOffMessage =
+      'I cannot read the screen because the PrivateAgent Screen Control '
+      'accessibility service is off, sir. Please enable it in Settings, '
+      'then Accessibility, then Downloaded apps, and turn on PrivateAgent '
+      'Screen Control. If the toggle is greyed out, open the app info, tap '
+      'the three-dot menu and choose Allow restricted settings first. Say '
+      '"open accessibility settings" and I will take you there.';
+
   /// Dumps foreground screen text nodes (e.g. from Chrome or article reader),
   /// generates an articulate executive briefing, updates the Floating HUD,
   /// and returns the spoken summary.
+  ///
+  /// The three failure modes are kept distinct so the user always knows
+  /// what went wrong (BUG-5): service off, empty screen, AI failure. The
+  /// result — summary OR failure message — is always shared back to the
+  /// overlay HUD (previously failures never reached the panel, so a failed
+  /// Summarize tap left the panel unchanged and the button looked dead).
   Future<String> summarizeForegroundScreen() async {
-    try {
-      final nodes = await ScreenAutomationService.instance.dumpScreen();
-      final texts = nodes
-          .map((n) => n.text.isNotEmpty ? n.text : n.contentDescription)
-          .map((t) => t.trim())
-          .where((t) => t.isNotEmpty)
-          .toSet()
-          .toList();
-
-      if (texts.isEmpty) {
-        return 'I could not detect any readable text on the current screen, sir.';
-      }
-
-      final joinedText = texts.take(40).join('\n');
-      final summary = await AiService.instance.summarizeScreenContent(joinedText);
-
-      // Broadcast summary to Floating Overlay HUD
-      try {
-        FlutterOverlayWindow.shareData(jsonEncode({
-          'type': 'screen_summary',
-          'title': 'Article Summary',
-          'summary': summary,
-        }));
-      } catch (_) {}
-
-      return summary;
-    } catch (e) {
-      return 'Unable to analyze the foreground screen article at this moment, sir.';
+    // Failure mode 1: the accessibility service is off. Check first
+    // instead of letting the native SERVICE_OFF error surface as a
+    // generic "unable to analyze" message.
+    final serviceOn = await ScreenAutomationService.instance.isServiceEnabled();
+    if (!serviceOn) {
+      return _shareScreenSummary(_serviceOffMessage);
     }
+
+    var nodes = <ScreenNode>[];
+    try {
+      nodes = await ScreenAutomationService.instance.dumpScreen();
+    } on PlatformException catch (e) {
+      if (e.code == 'SERVICE_OFF') {
+        return _shareScreenSummary(_serviceOffMessage);
+      }
+      return _shareScreenSummary(
+        'I could not read the screen just now, sir. (${e.message ?? e.code})',
+      );
+    } catch (_) {
+      return _shareScreenSummary(
+        'Unable to analyze the foreground screen article at this moment, sir.',
+      );
+    }
+
+    // BUG-7: a dump can come back empty on a transient window change
+    // (screen locked, app switching) — retry once after a short delay.
+    if (nodes.isEmpty) {
+      await Future.delayed(const Duration(milliseconds: 800));
+      try {
+        nodes = await ScreenAutomationService.instance.dumpScreen();
+      } catch (_) {
+        nodes = const [];
+      }
+    }
+
+    // BUG-6: rank by text length instead of taking the first 40 nodes in
+    // tree order (which are browser chrome on a web page).
+    final texts = _rankScreenText(nodes);
+    if (texts.isEmpty) {
+      final pkg = await ScreenAutomationService.instance.getForegroundPackage();
+      final where = pkg.isNotEmpty ? ' on $pkg' : '';
+      return _shareScreenSummary(
+        'I could not detect any readable text on the current screen$where, sir.',
+      );
+    }
+
+    final joinedText = texts.join('\n');
+    String summary;
+    try {
+      summary = await AiService.instance.summarizeScreenContent(joinedText);
+    } catch (_) {
+      return _shareScreenSummary(
+        'I read the screen, sir, but the AI summary failed. Please try again.',
+      );
+    }
+    return _shareScreenSummary(summary);
+  }
+
+  /// Shares [text] with the floating overlay HUD as a screen summary and
+  /// returns it, so the panel always shows what happened — including
+  /// failures (previously only successful summaries were shared, so a
+  /// failed tap left the panel unchanged and the button looked dead).
+  String _shareScreenSummary(String text) {
+    try {
+      FlutterOverlayWindow.shareData(jsonEncode({
+        'type': 'screen_summary',
+        'title': 'Article Summary',
+        'summary': text,
+      }));
+    } catch (_) {}
+    return text;
+  }
+
+  /// Picks the most article-like text from a screen dump for summarization.
+  /// Short labels (browser chrome, menus, buttons) are dropped; the
+  /// remaining nodes are ranked by length and taken until the character
+  /// budget is reached, so a Chrome page sends the article body instead of
+  /// the tab bar and URL bar. Falls back to the first 40 non-empty nodes
+  /// when a screen has only short labels (menus, settings) instead of
+  /// reporting "no readable text".
+  List<String> _rankScreenText(List<ScreenNode> nodes, {int maxChars = 12000}) {
+    final candidates = nodes
+        .map((n) => n.text.isNotEmpty ? n.text : n.contentDescription)
+        .map((t) => t.trim())
+        .where((t) => t.length >= 20)
+        .toSet()
+        .toList()
+      ..sort((a, b) => b.length.compareTo(a.length));
+    final picked = <String>[];
+    var used = 0;
+    for (final t in candidates) {
+      if (used >= maxChars) break;
+      picked.add(t);
+      used += t.length + 1;
+    }
+    if (picked.isNotEmpty) return picked;
+    return nodes
+        .map((n) => n.text.isNotEmpty ? n.text : n.contentDescription)
+        .map((t) => t.trim())
+        .where((t) => t.isNotEmpty)
+        .toSet()
+        .take(40)
+        .toList();
   }
 }

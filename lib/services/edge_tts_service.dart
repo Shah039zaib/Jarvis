@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'roman_urdu_transliterator.dart';
 import 'settings_service.dart';
 
 /// Ultra-realistic Neural Text-To-Speech powered by Microsoft Studio Neural voices.
@@ -507,6 +508,16 @@ class EdgeTtsService {
   Future<File?> synthesize(String text, {String? voice}) async {
     final selectedVoice = voice ?? SettingsService.instance.jarvisNeuralVoice;
 
+    // Roman Urdu speaking voice: the reply is Roman Urdu in Latin script,
+    // but ur-PK voices are trained on Urdu script — transliterate the text
+    // to Urdu script before synthesis (voice path only; chat text is
+    // untouched). English voices get the text as-is.
+    final isUrduVoice = selectedVoice.startsWith('ur-PK');
+    final speakText = isUrduVoice
+        ? RomanUrduTransliterator.transliterate(text)
+        : text;
+    final lang = isUrduVoice ? 'ur-PK' : 'en-US';
+
     // Fast-path: Check disk cache
     final cacheDir = await getTemporaryDirectory();
     final jarvisDir = Directory('${cacheDir.path}/jarvis_audio');
@@ -514,7 +525,7 @@ class EdgeTtsService {
       jarvisDir.createSync(recursive: true);
     }
 
-    final key = md5.convert(utf8.encode('$selectedVoice:$text')).toString();
+    final key = md5.convert(utf8.encode('$selectedVoice:$speakText')).toString();
     final cachedFile = File('${jarvisDir.path}/$key.mp3');
     if (cachedFile.existsSync() && cachedFile.lengthSync() > 1024) {
       return cachedFile;
@@ -552,7 +563,7 @@ class EdgeTtsService {
 
       final reqId = _generateUuidNoDashes();
       // Escape XML characters
-      final escapedText = text
+      final escapedText = speakText
           .replaceAll('&', '&amp;')
           .replaceAll('<', '&lt;')
           .replaceAll('>', '&gt;')
@@ -560,7 +571,7 @@ class EdgeTtsService {
           .replaceAll("'", '&apos;');
 
       final ssml =
-          "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'><voice name='$selectedVoice'><prosody pitch='+0Hz' rate='+0%' volume='+0%'>$escapedText</prosody></voice></speak>";
+          "<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='$lang'><voice name='$selectedVoice'><prosody pitch='+0Hz' rate='+0%' volume='+0%'>$escapedText</prosody></voice></speak>";
 
       final ssmlMsg = 'X-RequestId:$reqId\r\n'
           'Content-Type:application/ssml+xml\r\n'

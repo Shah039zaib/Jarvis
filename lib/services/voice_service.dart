@@ -6,6 +6,8 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import 'edge_tts_service.dart';
+import 'hermes_evolution_service.dart';
+import 'roman_urdu_transliterator.dart';
 import 'settings_service.dart';
 
 /// Voice interaction: native continuous speech-to-text for commands,
@@ -28,6 +30,17 @@ class VoiceService {
   final ValueNotifier<bool> isSpeaking = ValueNotifier<bool>(false);
   final ValueNotifier<double> soundLevel = ValueNotifier<double>(0.0);
   final ValueNotifier<bool> listeningNotifier = ValueNotifier<bool>(false);
+
+  /// True when the effective speaking voice is an Urdu (ur-PK) voice —
+  /// i.e. the configured reply language is Roman Urdu and no English
+  /// voice was explicitly chosen. Spoken text is then transliterated to
+  /// Urdu script before synthesis (voice path only; chat stays Roman Urdu).
+  bool get _isUrduVoice {
+    final voice = SettingsService.instance.effectiveNeuralVoice(
+      HermesEvolutionService.instance.replyLanguage,
+    );
+    return voice.startsWith('ur-PK');
+  }
 
   void Function(bool isListening)? onListeningChanged;
   void Function(String status)? onSpeechStatus;
@@ -98,7 +111,32 @@ class VoiceService {
   Future<void> initTts({String? voiceProfile}) async {
     final profile = voiceProfile ?? SettingsService.instance.jarvisVoice;
     try {
-      switch (profile) {
+      if (_isUrduVoice) {
+        // Roman Urdu speaking voice: the local flutter_tts fallback must
+        // use the ur-PK locale (the text is transliterated to Urdu script
+        // in speak() before it reaches the engine).
+        await _tts.setLanguage('ur-PK');
+        await _tts.setPitch(1.0);
+        await _tts.setSpeechRate(0.5);
+        try {
+          final dynamic voices = await _tts.getVoices;
+          if (voices is List && voices.isNotEmpty) {
+            for (final v in voices) {
+              if (v is Map) {
+                final locale = (v['locale'] ?? '').toString().toLowerCase();
+                if (locale.contains('ur-pk') || locale.contains('ur_pk')) {
+                  await _tts.setVoice({
+                    'name': v['name'].toString(),
+                    'locale': v['locale'].toString(),
+                  });
+                  break;
+                }
+              }
+            }
+          }
+        } catch (_) {}
+      } else {
+        switch (profile) {
         case 'friday':
           await _tts.setLanguage('en-IE');
           await _tts.setPitch(1.05);
@@ -150,6 +188,7 @@ class VoiceService {
             }
           } catch (_) {}
           break;
+        }
       }
 
       await _tts.awaitSpeakCompletion(true);
@@ -263,6 +302,15 @@ class VoiceService {
     final clean = sanitizeForSpeech(text);
     if (clean.isEmpty) return;
 
+    // Roman Urdu speaking voice: transliterate the reply to Urdu script
+    // before synthesis (voice path only; the chat text stays Roman Urdu).
+    // English technical words are kept in Latin script by the
+    // transliterator's keep-list. Transliteration is idempotent, so the
+    // Edge-TTS path transliterating again inside synthesize() is safe.
+    final spokenText = _isUrduVoice
+        ? RomanUrduTransliterator.transliterate(clean)
+        : clean;
+
     // Temporarily pause microphone while speaking to eliminate echo and feedback
     final wasListening = _listening;
     if (wasListening) {
@@ -276,7 +324,11 @@ class VoiceService {
       // 1. Try Ultra-Realistic Studio Neural Voice if enabled
       if (SettingsService.instance.useNeuralVoice) {
         try {
-          final played = await EdgeTtsService.instance.speak(clean);
+          final voice = SettingsService.instance.effectiveNeuralVoice(
+            HermesEvolutionService.instance.replyLanguage,
+          );
+          final played =
+              await EdgeTtsService.instance.speak(spokenText, voice: voice);
           if (played) {
             return;
           }
@@ -292,7 +344,7 @@ class VoiceService {
       }
       try {
         _speakCompleter = Completer<void>();
-        await _tts.speak(clean);
+        await _tts.speak(spokenText);
         // Wait for audio synthesis and speaker playback to finish completely
         await _speakCompleter?.future;
       } catch (_) {

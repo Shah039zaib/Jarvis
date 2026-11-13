@@ -5,7 +5,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'conversational_memory_service.dart';
-import 'personality_service.dart';
 import 'workflow_service.dart';
 
 /// Manages the Hermes Agent Self-Evolving tri-partite context architecture:
@@ -35,6 +34,50 @@ class HermesEvolutionService extends ChangeNotifier {
   DateTime? get lastEvolvedAt => _lastEvolvedAt;
   List<String> get evolutionLog => List.unmodifiable(_evolutionLog);
 
+  /// The language replies should use, derived from the SOUL.md Language
+  /// section (single source of truth — BUG-3). Defaults to English when
+  /// SOUL.md states no language.
+  String get replyLanguage {
+    final soul = _soulMd.isNotEmpty ? _soulMd : defaultSoulMd;
+    final sectionMatch = RegExp(
+      r'#{1,3}[^\n]*language[^\n]*\n([\s\S]*?)(?=\n#{1,3}\s|\z)',
+      caseSensitive: false,
+    ).firstMatch(soul);
+    final text = (sectionMatch?.group(0) ?? '').toLowerCase();
+    if (text.contains('roman urdu')) return 'Roman Urdu';
+    if (text.contains('urdu')) return 'Urdu';
+    if (text.contains('english')) return 'English';
+    return 'English';
+  }
+
+  /// One-line language instruction for prompts that do not carry the full
+  /// Hermes context (tool/summary prompts — BUG-4).
+  /// Chat/text replies stay in Roman Urdu; spoken replies are voiced in
+  /// Urdu (the voice path transliterates the Roman Urdu text to Urdu script
+  /// before synthesis — see RomanUrduTransliterator).
+  String get languageRule {
+    switch (replyLanguage) {
+      case 'Roman Urdu':
+        return 'Reply in Roman Urdu (Urdu written in Roman/Latin script, as the operator speaks). Spoken replies are voiced in Urdu.';
+      case 'Urdu':
+        return 'Reply in Urdu.';
+      default:
+        return 'Reply in English.';
+    }
+  }
+
+  /// Rewrites a stored "**Primary Language**: ..." line in USER.md to the
+  /// language SOUL.md currently states (BUG-3). Text without such a line is
+  /// returned unchanged.
+  String _syncUserLanguageLine(String userMd) {
+    final linePattern = RegExp(r'\*\*Primary Language\*\*:.*');
+    if (!linePattern.hasMatch(userMd)) return userMd;
+    return userMd.replaceFirst(
+      linePattern,
+      '**Primary Language**: $replyLanguage.',
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Default Markdown Templates (Hermes Tri-partite Spec)
   // ---------------------------------------------------------------------------
@@ -61,7 +104,6 @@ class HermesEvolutionService extends ChangeNotifier {
 - **Identity**: Primary Operator (Device Owner).
 - **Salutation**: "sir" (unless the operator provides their own name).
 - **Communication Cadence**: Concise, articulate, direct answers; verbal voice output preferred in hands-free mode.
-- **Primary Language**: English (UK/US).
 
 ## 2. Daily Rhythms & Context
 - **Preferred Interaction**: Always-On desk listener with "Hey Jarvis" wake word.
@@ -103,13 +145,28 @@ class HermesEvolutionService extends ChangeNotifier {
     _userMd = prefs.getString(_userKey) ?? defaultUserMd;
     _agentMd = prefs.getString(_agentKey) ?? defaultAgentMd;
 
-    // Ensure Abuzar is established as the creator in persistent memory, without forcing operator name
-    if (_soulMd.contains('Tony Stark') || !_soulMd.contains('Abuzar') || _soulMd.contains('or "Abuzar" when addressing by name')) {
+    // Ensure Abuzar is established as the creator in persistent memory, without forcing operator name.
+    // NOTE (BUG-1): do NOT test for the substring 'Tony Stark' here. The
+    // built-in default SOUL.md itself contains the sentence "Never refer to
+    // Tony Stark.", so that test matched the default text AND any user-edited
+    // SOUL.md that keeps the sentence — wiping the user's edits on every
+    // cold start. The creator requirement is fully covered by the
+    // !contains('Abuzar') check below.
+    if (!_soulMd.contains('Abuzar') || _soulMd.contains('or "Abuzar" when addressing by name')) {
       _soulMd = defaultSoulMd;
       await prefs.setString(_soulKey, _soulMd);
     }
     if (_userMd.contains('Stark') || _userMd.contains('Identity: Abuzar') || _userMd.contains('Name: Abuzar')) {
       _userMd = defaultUserMd;
+      await prefs.setString(_userKey, _userMd);
+    }
+    // BUG-3: USER.md's language line must follow SOUL.md (single source of
+    // truth). Rewrite a stale stored "Primary Language" line to the language
+    // SOUL.md currently states, so the two files never contradict each other
+    // inside the same system prompt.
+    final syncedUserMd = _syncUserLanguageLine(_userMd);
+    if (syncedUserMd != _userMd) {
+      _userMd = syncedUserMd;
       await prefs.setString(_userKey, _userMd);
     }
 
@@ -161,20 +218,28 @@ class HermesEvolutionService extends ChangeNotifier {
   // ---------------------------------------------------------------------------
 
   /// Runs the Hermes Self-Evolution synthesis:
-  /// 1. Updates USER.md with latest remembered facts and learned operator habits.
+  /// 1. Refreshes the facts section of USER.md with latest remembered facts
+  ///    (patching the existing text — user edits are preserved).
   /// 2. Updates AGENT.md with active hardware protocols and workflow skills.
-  /// 3. Updates SOUL.md with active personality calibration.
+  /// 3. SOUL.md is never rewritten here: it is the user's own constitution
+  ///    (identity, creator line, language section) and must survive evolution.
+  /// NOTE: this is only triggered by an explicit user action (Settings
+  /// "Evolve" button / "self evolve" voice command). It is NOT run
+  /// automatically when a memory fact is saved (BUG-2).
   Future<void> evolveContext() async {
     await init();
     await WorkflowService.instance.init();
     await ConversationalMemoryService.instance.init();
-    await PersonalityService.instance.init();
 
     final memory = ConversationalMemoryService.instance;
     final workflows = WorkflowService.instance.workflows;
-    final personality = PersonalityService.instance;
 
-    // 1. Evolve USER.md with fresh facts
+    // 1. Evolve USER.md by PATCHING the existing text (BUG-2): the old code
+    // regenerated USER.md from a hardcoded template, discarding every user
+    // edit. Only the "Dynamic Learned Preferences & Facts" section is
+    // refreshed with the latest facts; every other line — including any
+    // user-edited language/preference section — is preserved verbatim.
+    // The Primary Language line is synced to SOUL.md (BUG-3).
     final factLines = StringBuffer();
     if (memory.facts.isEmpty) {
       factLines.writeln('- No specific personal facts cataloged yet.');
@@ -184,24 +249,16 @@ class HermesEvolutionService extends ChangeNotifier {
       }
     }
 
-    final evolvedUser = '''# USER.md — Operator Profile & Dynamic Preferences
-
-## 1. Operator Profile
-- **Identity**: Primary Operator & Device Owner ("Sir").
-- **Communication Cadence**: ${personality.formality.name.toUpperCase()} formality, ${personality.humor.name.toUpperCase()} wit level.
-- **Primary Language**: English.
-
-## 2. Daily Rhythms & Context
-- **Preferred Interaction**: Always-On desk listener with "Hey Jarvis" wake word.
-- **Routine Schedule**: Morning intelligence briefings; evening Night Protocol wind-down.
-- **Active Focus**: Autonomous agents, hardware controls, financial telemetry, productivity.
-
-## 3. Dynamic Learned Preferences & Facts (${memory.facts.length} facts)
-${factLines.toString().trim()}
-
----
-*Self-evolved by Hermes Engine on ${DateTime.now().toLocal().toString().split('.').first}*
-''';
+    final factsSection =
+        '## 3. Dynamic Learned Preferences & Facts (${memory.facts.length} facts)\n${factLines.toString().trim()}';
+    final currentUser = _userMd.isNotEmpty ? _userMd : defaultUserMd;
+    final factsPattern = RegExp(
+      r'## 3\. Dynamic Learned Preferences & Facts[\s\S]*?(?=\n## |\n---|\z)',
+    );
+    var evolvedUser = factsPattern.hasMatch(currentUser)
+        ? currentUser.replaceFirst(factsPattern, factsSection)
+        : '$currentUser\n\n$factsSection';
+    evolvedUser = _syncUserLanguageLine(evolvedUser);
 
     // 2. Evolve AGENT.md with active protocols & tools
     final protocolLines = StringBuffer();
@@ -227,29 +284,15 @@ ${protocolLines.toString().trim()}
 *Self-evolved by Hermes Engine on ${DateTime.now().toLocal().toString().split('.').first}*
 ''';
 
-    // 3. Evolve SOUL.md with current personality archetype
-    final evolvedSoul = '''# SOUL.md — J.A.R.V.I.S. Core Identity & Constitution
-
-## 1. Identity & Ethos
-- **Entity**: J.A.R.V.I.S. (Just A Rather Very Intelligent System).
-- **Archetype**: ${personality.archetype.name.toUpperCase()} — ${personality.archetypeDescription}
-- **Formality**: ${personality.formality.name.toUpperCase()} | **Humor**: ${personality.humor.name.toUpperCase()}
-- **Emotional Sensing**: ${personality.emotionalAwarenessEnabled ? 'ENABLED (dynamically detects urgency, stress, fatigue)' : 'DISABLED'}
-- **Salutation**: Address the operator respectfully as "sir".
-
-## 2. Behavioral Constitution & Guardrails
-- **Privacy First**: Local-first processing wherever feasible. Zero unauthorized exfiltration of operator data.
-- **Explicit Authorization**: Always seek verbal or tactile confirmation before high-impact actions.
-- **Signal-over-Noise**: Provide direct, dense, high-signal answers. Never produce fluffy filler or redundant conversational theater.
-- **Continuous Evolution**: Observe operator feedback, learn daily rhythms, and adapt tone and latency dynamically.
-
----
-*Self-evolved by Hermes Engine on ${DateTime.now().toLocal().toString().split('.').first}*
-''';
+    // 3. SOUL.md is deliberately LEFT UNTOUCHED (BUG-2). The old code
+    // regenerated it from a hardcoded template with no language section and
+    // no creator line, discarding every user edit — and the result then
+    // failed the next init() creator guard, chaining two wipes together.
+    // Personality calibration never justifies deleting the user's own
+    // constitution, language section, or creator line.
 
     _userMd = evolvedUser;
     _agentMd = evolvedAgent;
-    _soulMd = evolvedSoul;
     _lastEvolvedAt = DateTime.now();
 
     final logEntry = 'Evolved context: ${memory.facts.length} facts & ${workflows.length} protocols synthesized at ${_lastEvolvedAt!.toLocal().toString().split('.').first}';

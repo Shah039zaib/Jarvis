@@ -19,6 +19,24 @@ class AiException implements Exception {
       statusCode == null ? message : 'HTTP $statusCode: $message';
 }
 
+/// Plain-language explanation for the common provider failures carried by
+/// [AiException] (BUG-9): the raw HTTP body (e.g. "HTTP 402: ...") tells the
+/// user nothing actionable. Falls back to the raw message for anything else.
+String describeAiError(AiException e) {
+  switch (e.statusCode) {
+    case 401:
+      return 'Wrong API key — check the key in Settings and try again.';
+    case 402:
+      return 'This model is not free on your key (payment required). Pick a :free model, e.g. nvidia/nemotron-3-ultra-550b-a55b:free.';
+    case 429:
+      return 'Daily limit reached, or the provider is busy right now. Wait a while and try again.';
+    case 404:
+      return 'Model or endpoint not found — check the model name and base URL in Settings.';
+    default:
+      return e.message;
+  }
+}
+
 /// Structured intent classification result for JARVIS mode.
 enum JarvisIntentType {
   chat,
@@ -760,6 +778,35 @@ You cannot directly tap the screen in this mode. If the user asks you to perform
     return chat(message: prompt);
   }
 
+  /// Minimal probe used by the Settings "Test connection" button (BUG-10):
+  /// one tiny non-streaming completion. Returns the reply on success;
+  /// throws [AiException] (with statusCode) on failure so the caller can
+  /// report bad key (401) / model not free (402) / rate-limited (429) /
+  /// unreachable in plain language via [describeAiError].
+  Future<String> testConnection() async {
+    final settings = SettingsService.instance;
+    return _postChatCompletion([
+      {'role': 'user', 'content': 'Reply with exactly this word: OK'},
+    ], settings);
+  }
+
+  /// Normalizes a stored base URL before a request is built (BUG-12):
+  /// appends `/v1` to a local backend URL that lacks it
+  /// (e.g. `http://127.0.0.1:11434` → `http://127.0.0.1:11434/v1`),
+  /// because Ollama's OpenAI-compatible endpoint lives under `/v1`.
+  /// Non-local hosts are returned unchanged.
+  static String _normalizeBaseUrl(String base) {
+    final trimmed = base.replaceAll(RegExp(r'/+$'), '');
+    final uri = Uri.tryParse(trimmed);
+    if (uri == null) return trimmed;
+    final host = uri.host;
+    final isLocal =
+        host == 'localhost' || host == '127.0.0.1' || host == '[::1]';
+    if (!isLocal) return trimmed;
+    if (uri.path.endsWith('/v1')) return trimmed;
+    return '$trimmed/v1';
+  }
+
   /// Tolerant JSON object parser extracting first {...} block.
   Map<String, dynamic> parseLenientJson(String text) {
     try {
@@ -819,7 +866,7 @@ You cannot directly tap the screen in this mode. If the user asks you to perform
       throw const AiException('No model name configured.');
     }
 
-    final base = settings.baseUrl.replaceAll(RegExp(r'/+$'), '');
+    final base = _normalizeBaseUrl(settings.baseUrl);
     final uri = Uri.parse('$base/chat/completions');
 
     final headers = <String, String>{
@@ -1139,7 +1186,12 @@ Respond with ONLY a single JSON object:
     List<Map<String, String>> history = const [],
   }) async {
     final settings = SettingsService.instance;
+    // BUG-4: tool answers previously built their own prompt with no Hermes
+    // context, so the SOUL.md language rule never reached the model. Include
+    // the language rule (single source of truth: SOUL.md).
+    final hermes = HermesEvolutionService.instance;
     final systemPrompt = '''
+${hermes.languageRule}
 You are Jarvis, an elite, highly intelligent personal AI companion created and built by Abuzar.
 The user asked: "$userQuestion"
 Retrieved real-time information:
@@ -1184,13 +1236,18 @@ HUMAN SPOKEN DELIVERY GUIDELINES:
     List<Map<String, dynamic>> history = const [],
   }) async {
     final settings = SettingsService.instance;
+    // BUG-4: the vision prompt used to demand English outright and never saw
+    // the SOUL.md language rule. Reply in the user's configured language.
+    final hermes = HermesEvolutionService.instance;
+    final language = hermes.replyLanguage;
     final systemPrompt = '''
+${hermes.languageRule}
 You are Jarvis, an elite, highly intelligent AI assistant created and built by Abuzar, with advanced optical perception ("Jarvis Eye").
 Analyze the provided visual image with exceptional detail and precision.
 1. Identify physical objects, devices, circuits, documents, receipts, warning lights, text, or errors.
 2. Formulate your findings into 2 to 3 articulate, courteous sentences in the style of a British butler and brilliant tech advisor.
 3. Address the user politely as "sir" (or by their name if introduced). Never assume every user is Abuzar; Abuzar is your creator.
-4. Never output markdown asterisks or bullet points. Provide clean spoken English ready for voice synthesis.
+4. Never output markdown asterisks or bullet points. Provide clean spoken $language ready for voice synthesis.
 ''';
 
     final userContent = <Map<String, dynamic>>[
@@ -1223,12 +1280,17 @@ Analyze the provided visual image with exceptional detail and precision.
   /// Produces a crisp, articulate 2-3 sentence executive briefing.
   Future<String> summarizeScreenContent(String screenText) async {
     final settings = SettingsService.instance;
+    // BUG-4: the summary prompt used to demand English outright and never
+    // saw the SOUL.md language rule. Reply in the user's configured language.
+    final hermes = HermesEvolutionService.instance;
+    final language = hermes.replyLanguage;
     final systemPrompt = '''
+${hermes.languageRule}
 You are Jarvis, an elite, highly intelligent AI assistant created and built by Abuzar.
 The user is viewing an article or screen on their device and requested an executive briefing.
 1. Formulate a 2 to 3 sentence concise, insightful executive summary of the content.
 2. Address the user politely as "sir" (or by their name if introduced). Never assume the user is Abuzar.
-3. Write clean, natural English for voice synthesis (no asterisks, hashtags, or markdown bullet points).
+3. Write clean, natural $language for voice synthesis (no asterisks, hashtags, or markdown bullet points).
 ''';
 
     final messages = <Map<String, dynamic>>[
@@ -1273,7 +1335,7 @@ The user is viewing an article or screen on their device and requested an execut
       throw const AiException('No model name configured.');
     }
 
-    final base = settings.baseUrl.replaceAll(RegExp(r'/+$'), '');
+    final base = _normalizeBaseUrl(settings.baseUrl);
     final uri = Uri.parse('$base/chat/completions');
 
     final headers = <String, String>{

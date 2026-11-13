@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// Interaction mode of the home screen.
@@ -28,10 +29,27 @@ class SettingsService extends ChangeNotifier {
 
   SharedPreferences? _prefs;
 
+  /// API keys are kept in the platform secure store (Android Keystore /
+  /// iOS Keychain) via flutter_secure_storage, never in plaintext
+  /// SharedPreferences (BUG-13). [_apiKey] is the in-memory cache so the
+  /// synchronous [apiKey] getter keeps working.
+  final _secureStorage = const FlutterSecureStorage();
+  static const _secureApiKeyKey = 'ai_api_key_secure';
+  String? _apiKey;
+
   bool get isReady => _prefs != null;
 
   Future<void> init() async {
     _prefs ??= await SharedPreferences.getInstance();
+    // One-time migration (BUG-13): move a plaintext key stored by older
+    // versions into secure storage, then delete the plaintext copy.
+    _apiKey = await _secureStorage.read(key: _secureApiKeyKey);
+    final legacyKey = _prefs?.getString('ai_api_key');
+    if (_apiKey == null && legacyKey != null && legacyKey.isNotEmpty) {
+      await _secureStorage.write(key: _secureApiKeyKey, value: legacyKey);
+      await _prefs?.remove('ai_api_key');
+      _apiKey = legacyKey;
+    }
     // Ensure system prompt is enabled so models always receive the agent action grammar
     if (_prefs?.getBool('ai_use_system_prompt') != true) {
       await _prefs?.setBool('ai_use_system_prompt', true);
@@ -63,7 +81,10 @@ class SettingsService extends ChangeNotifier {
     'openrouter': (
       label: 'OpenRouter',
       baseUrl: 'https://openrouter.ai/api/v1',
-      model: 'openai/gpt-4o-mini',
+      // Free-tier default: a :free model, so the app works on a free
+      // OpenRouter key (the previous default, openai/gpt-4o-mini, is paid
+      // and returned HTTP 402 on free keys — BUG-9).
+      model: 'nvidia/nemotron-3-ultra-550b-a55b:free',
     ),
     'nvidia': (
       label: 'NVIDIA NIM',
@@ -79,15 +100,31 @@ class SettingsService extends ChangeNotifier {
   };
 
   String get provider => _prefs?.getString('ai_provider') ?? 'deepseek';
+
+  /// Switches provider. The preset base URL / model are applied ONLY when
+  /// the provider actually changes (BUG-8): re-tapping the already-selected
+  /// provider used to silently reset a custom model back to the preset.
+  /// A user-typed custom model is never overwritten — the preset model is
+  /// applied only when no model is stored yet or the stored model is itself
+  /// one of the built-in presets (i.e. the user never customized it).
   Future<void> setProvider(String value) async {
+    if (value == provider) return;
     await _prefs?.setString('ai_provider', value);
     final preset = providers[value];
     if (preset != null && preset.baseUrl.isNotEmpty) {
       await _prefs?.setString('ai_base_url', preset.baseUrl);
-      await _prefs?.setString('ai_model', preset.model);
+      final currentModel = _prefs?.getString('ai_model') ?? '';
+      if (currentModel.isEmpty || _isPresetModel(currentModel)) {
+        await _prefs?.setString('ai_model', preset.model);
+      }
     }
     notifyListeners();
   }
+
+  /// True when [model] is one of the built-in preset models (i.e. the user
+  /// has not typed a custom model name).
+  bool _isPresetModel(String model) =>
+      providers.values.any((p) => p.model == model);
 
   String get baseUrl =>
       _prefs?.getString('ai_base_url') ??
@@ -98,9 +135,17 @@ class SettingsService extends ChangeNotifier {
     notifyListeners();
   }
 
-  String get apiKey => _prefs?.getString('ai_api_key') ?? '';
+  /// API key, read from secure storage (BUG-13). Falls back to the legacy
+  /// plaintext SharedPreferences value only until the one-time migration in
+  /// [init] has run.
+  String get apiKey =>
+      _apiKey ?? _prefs?.getString('ai_api_key') ?? '';
   Future<void> setApiKey(String value) async {
-    await _prefs?.setString('ai_api_key', value.trim());
+    final clean = value.trim();
+    _apiKey = clean;
+    await _secureStorage.write(key: _secureApiKeyKey, value: clean);
+    // Drop any legacy plaintext copy.
+    await _prefs?.remove('ai_api_key');
     notifyListeners();
   }
 
@@ -113,9 +158,11 @@ class SettingsService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Defaults to 2048 so reasoning models (which burn completion tokens on
-  /// hidden thinking before answering) still have budget left for the reply.
-  int get maxTokens => _prefs?.getInt('ai_max_tokens') ?? 2048;
+  /// Defaults to 4096 so reasoning models (which burn completion tokens on
+  /// hidden thinking before answering) still have budget left for the reply
+  /// (BUG-11: 2048 was too low — Nemotron 3 Ultra could return empty
+  /// content with finish_reason == 'length').
+  int get maxTokens => _prefs?.getInt('ai_max_tokens') ?? 4096;
   Future<void> setMaxTokens(int value) async {
     await _prefs?.setInt('ai_max_tokens', value.clamp(128, 16384));
     notifyListeners();
@@ -251,6 +298,20 @@ class SettingsService extends ChangeNotifier {
   /// Defaults to en-GB-RyanNeural (Paul Bettany British JARVIS style).
   String get jarvisNeuralVoice =>
       _prefs?.getString('jarvis_neural_voice') ?? 'en-GB-RyanNeural';
+
+  /// Effective speaking voice: an explicitly stored choice always wins;
+  /// otherwise the default follows the configured reply language — the
+  /// Urdu voice (ur-PK-AsadNeural) for Roman Urdu replies, the British
+  /// JARVIS voice otherwise. [replyLanguage] comes from Hermes (its
+  /// SOUL.md language section); passing it in avoids a settings→hermes
+  /// import cycle (hermes → workflow → sentry/smart-home → settings).
+  String effectiveNeuralVoice(String replyLanguage) {
+    final stored = _prefs?.getString('jarvis_neural_voice');
+    if (stored != null && stored.isNotEmpty) return stored;
+    return replyLanguage == 'Roman Urdu'
+        ? 'ur-PK-AsadNeural'
+        : 'en-GB-RyanNeural';
+  }
   Future<void> setJarvisNeuralVoice(String value) async {
     await _prefs?.setString('jarvis_neural_voice', value);
     notifyListeners();

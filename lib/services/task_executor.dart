@@ -250,7 +250,9 @@ class TaskExecutor extends ChangeNotifier {
     } on AiException catch (e) {
       if (fullResponseBuffer.isEmpty) {
         logs.remove(agentMsg);
-        _log(ChatMessage.error('AI request failed: $e'));
+        // BUG-9: surface 401/402/429 in plain language instead of the raw
+        // "AI request failed: HTTP 402: ..." line.
+        _log(ChatMessage.error('AI request failed: ${describeAiError(e)}'));
       }
     } catch (e) {
       if (fullResponseBuffer.isEmpty) {

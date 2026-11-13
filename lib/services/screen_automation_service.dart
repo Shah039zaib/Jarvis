@@ -36,6 +36,17 @@ class ScreenAutomationService {
   Future<void> openAccessibilitySettings() =>
       _channel.invokeMethod<void>('openAccessibilitySettings');
 
+  /// Package name of the app in the foreground window (BUG-7), or ''
+  /// when unknown / the service is off. Used to make empty screen dumps
+  /// diagnosable ("no readable text on com.example.app").
+  Future<String> getForegroundPackage() async {
+    try {
+      return await _channel.invokeMethod<String>('getForegroundPackage') ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
   Future<void> openAppInfoSettings() =>
       _channel.invokeMethod<void>('openAppInfoSettings');
 
