@@ -56,6 +56,9 @@ dependencies:
 
   # Storage
   shared_preferences: ^2.5.5
+  # API keys live in the Android Keystore / iOS Keychain, never in plaintext
+  # SharedPreferences (see SettingsService).
+  flutter_secure_storage: ^11.2.0
   path_provider: ^2.1.6
 
   # Notifications
