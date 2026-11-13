@@ -718,6 +718,18 @@ class MainActivity : FlutterActivity() {
                         AgentAccessibilityService.isConnected
                     )
 
+                    "getForegroundPackage" -> {
+                        if (service == null) {
+                            result.error(
+                                "SERVICE_OFF",
+                                "Accessibility service is not enabled",
+                                null
+                            )
+                        } else {
+                            result.success(service.foregroundPackage())
+                        }
+                    }
+
                     "openAccessibilitySettings" -> {
                         startActivity(
                             Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)

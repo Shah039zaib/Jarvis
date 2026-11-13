@@ -149,6 +149,18 @@ class AgentAccessibilityService : AccessibilityService() {
     // Screen dump
     // ------------------------------------------------------------------
 
+    /** Package name of the app in the foreground window, or "" if unknown.
+     * Used to make empty screen dumps diagnosable (BUG-7). */
+    fun foregroundPackage(): String {
+        val active = rootInActiveWindow
+        if (active != null) return active.packageName?.toString() ?: ""
+        return try {
+            windows?.firstOrNull { it.isActive || it.isFocused }?.root?.packageName?.toString() ?: ""
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
     /**
      * Recursively traverses the foreground app's window tree and flattens
      * "interesting" nodes (visible nodes with a label or an interaction
