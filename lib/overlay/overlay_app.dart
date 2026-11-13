@@ -44,6 +44,12 @@ class _OverlayAppState extends State<OverlayApp>
   String? _screenSummary;
   String _summaryTitle = 'Screen Article Summary';
 
+  /// True while a Summarize Screen request is in flight. Shows instant
+  /// "Summarizing screen…" feedback on tap so the button never looks
+  /// dead while the dump/AI call is running. Cleared when a
+  /// screen_summary event arrives (summary or failure message).
+  bool _isSummarizing = false;
+
   bool get _busy =>
       _jarvisPhase == 'thinking' ||
       _jarvisPhase == 'speaking' ||
@@ -94,6 +100,7 @@ class _OverlayAppState extends State<OverlayApp>
         setState(() {
           _screenSummary = decoded['summary']?.toString();
           _summaryTitle = decoded['title']?.toString() ?? 'Screen Article Summary';
+          _isSummarizing = false;
         });
         if (!_expanded) {
           _expand();
@@ -332,6 +339,15 @@ class _OverlayAppState extends State<OverlayApp>
             ],
           ),
           const SizedBox(height: 8),
+          if (_isSummarizing)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
+              child: LinearProgressIndicator(
+                color: Color(0xFF00E5FF),
+                backgroundColor: Colors.white10,
+                minHeight: 2,
+              ),
+            ),
           Expanded(
             child: SingleChildScrollView(
               physics: const BouncingScrollPhysics(),
@@ -357,7 +373,10 @@ class _OverlayAppState extends State<OverlayApp>
                   ),
                   icon: const Icon(Icons.refresh, size: 14),
                   label: const Text('Rescan', style: TextStyle(fontSize: 11)),
-                  onPressed: () => _sendCommand({'command': 'summarize_screen'}),
+                  onPressed: () {
+                    setState(() => _isSummarizing = true);
+                    _sendCommand({'command': 'summarize_screen'});
+                  },
                 ),
               ),
               const SizedBox(width: 8),
@@ -416,18 +435,43 @@ class _OverlayAppState extends State<OverlayApp>
             style: TextStyle(color: Colors.white54, fontSize: 10.5, height: 1.4),
           ),
           const SizedBox(height: 16),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF00E5FF).withValues(alpha: 0.2),
-              foregroundColor: const Color(0xFF00E5FF),
-              side: const BorderSide(color: Color(0xFF00E5FF), width: 1.2),
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          // Instant feedback while the summary is in flight: the button
+          // never looks dead while the dump/AI call is running.
+          if (_isSummarizing)
+            const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    color: Color(0xFF00E5FF),
+                    strokeWidth: 2,
+                  ),
+                ),
+                SizedBox(height: 10),
+                Text(
+                  'Summarizing screen…',
+                  style: TextStyle(color: Colors.white70, fontSize: 11.5),
+                ),
+              ],
+            )
+          else
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00E5FF).withValues(alpha: 0.2),
+                foregroundColor: const Color(0xFF00E5FF),
+                side: const BorderSide(color: Color(0xFF00E5FF), width: 1.2),
+                padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              icon: const Icon(Icons.bolt, size: 16),
+              label: const Text('Summarize Current Screen', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+              onPressed: () {
+                setState(() => _isSummarizing = true);
+                _sendCommand({'command': 'summarize_screen'});
+              },
             ),
-            icon: const Icon(Icons.bolt, size: 16),
-            label: const Text('Summarize Current Screen', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-            onPressed: () => _sendCommand({'command': 'summarize_screen'}),
-          ),
         ],
       ),
     );
