@@ -45,12 +45,12 @@ class RomanUrduTransliterator {
     'pin', 'nfc', 'lte', '5g', '4g', 'sms', 'call', 'chat', 'group',
     'channel', 'bot', 'plugin', 'addon', 'theme', 'font', 'apk', 'ios',
     'android', 'flutter', 'dart', 'python', 'java', 'sql', 'html', 'css',
-    'json', 'url', 'http', 'https', 'ip', 'dns', 'vpn', 'proxy', 'token',
+    'json', 'url', 'http', 'https', 'ip', 'dns', 'proxy', 'token',
     'license', 'premium', 'free', 'pro', 'plus', 'beta', 'alpha', 'stable',
     'debug', 'test', 'testing', 'build', 'release', 'deploy', 'render',
     'mongodb', 'firebase', 'openai', 'claude', 'deepseek', 'llama', 'qwen',
     'nemotron', 'nvidia', 'meta', 'microsoft', 'samsung', 'tecno', 'vivo',
-    'xiaomi', 'oppo', 'huawei', 'iphone', 'samsung', 'windows', 'linux',
+    'xiaomi', 'oppo', 'huawei', 'iphone', 'windows', 'linux',
     'macos', 'edge', 'tts', 'stt', 'whisper', 'groq', 'huggingface',
     'system', 'systems', 'low', 'high', 'full', 'empty', 'boring',
     // --- common English words that appear inside mixed replies ---
@@ -62,7 +62,7 @@ class RomanUrduTransliterator {
     'how', 'ok', 'okay', 'hi', 'hello', 'hey', 'bye', 'please', 'thanks',
     'thank', 'yes', 'no', 'good', 'morning', 'night', 'happy', 'birthday',
     'love', 'sir', 'set', 'let', 'long', 'new', 'old', 'big', 'small',
-    'fast', 'slow', 'open', 'close', 'start', 'stop', 'play', 'pause',
+    'fast', 'slow', 'open', 'close', 'start', 'stop', 'pause',
     'next', 'back', 'home', 'search', 'find', 'help', 'info', 'about',
     'gpt', 'tax',
   };
