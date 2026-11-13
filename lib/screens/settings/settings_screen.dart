@@ -1,6 +1,7 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
 
+import '../../services/ai_service.dart';
 import '../../services/personality_service.dart';
 import '../../services/settings_service.dart';
 import '../../services/telegram_service.dart';
@@ -28,6 +29,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _chatsController;
 
   bool _obscureKey = true;
+  bool _testingConnection = false;
   bool _obscureToken = true;
 
   String _lastSyncedProvider = '';
@@ -157,10 +159,66 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
   }
 
-  Future<void> _saveAiSettings() async {
+  /// BUG-10: Tests the configured AI provider with a real request and
+  /// reports the result in plain language — OK, bad key (401), model not
+  /// free (402), rate-limited (429), or unreachable. Unsaved edits are
+  /// persisted first so the test runs against what is on screen.
+  Future<void> _testAiConnection() async {
+    setState(() => _testingConnection = true);
+    try {
+      await _persistAiSettings();
+      bool ok;
+      String message;
+      try {
+        await AiService.instance.testConnection();
+        ok = true;
+        message = 'Connection OK — the provider replied.';
+      } on AiException catch (e) {
+        ok = false;
+        message = describeAiError(e);
+      } catch (e) {
+        ok = false;
+        message =
+            'Could not reach the provider. Check the base URL and your connection. ($e)';
+      }
+      if (!mounted) return;
+      setState(() {});
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                Icon(
+                  ok ? Icons.check_circle_outline : Icons.error_outline,
+                  color: ok ? Colors.greenAccent : Colors.redAccent,
+                  size: 20,
+                ),
+                const SizedBox(width: 10),
+                Expanded(child: Text(message)),
+              ],
+            ),
+            duration: const Duration(seconds: 4),
+            behavior: SnackBarBehavior.floating,
+            shape:
+                RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          ),
+        );
+    } finally {
+      if (mounted) setState(() => _testingConnection = false);
+    }
+  }
+
+  /// Persists the AI provider fields without any UI feedback, so the
+  /// Test connection button can save first and then test the saved values.
+  Future<void> _persistAiSettings() async {
     await _settings.setBaseUrl(_baseUrlController.text);
     await _settings.setApiKey(_apiKeyController.text);
     await _settings.setModel(_modelController.text);
+  }
+
+  Future<void> _saveAiSettings() async {
+    await _persistAiSettings();
     if (!mounted) return;
     setState(() {});
     ScaffoldMessenger.of(context)
@@ -408,6 +466,30 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
           ),
+          // BUG-10: Test connection — calls the provider and reports
+          // OK / bad key / model not free / rate-limited / unreachable.
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: OutlinedButton.icon(
+              onPressed: _testingConnection ? null : _testAiConnection,
+              style: OutlinedButton.styleFrom(
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+              icon: _testingConnection
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.wifi_tethering_rounded, size: 18),
+              label: Text(
+                _testingConnection ? 'Testing…' : 'Test connection',
+                style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 13.5),
+              ),
+            ),
+          ),
           if (_aiDirty)
             const Padding(
               padding: EdgeInsets.only(top: 8),
@@ -442,8 +524,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
             label: 'Max Response Tokens',
             value: _settings.maxTokens.toDouble(),
             min: 256,
-            max: 4096,
-            divisions: 15,
+            max: 8192,
+            divisions: 31,
             displayValue: _settings.maxTokens.toString(),
             onChanged: (v) => _settings.setMaxTokens(v.round()),
           ),

@@ -348,6 +348,11 @@ class _JarvisSettingsScreenState extends State<JarvisSettingsScreen> {
       ('en-US-GuyNeural', 'Guy (US Neural - Studio Male)', 'Polished, authoritative US broadcaster tone'),
       ('en-US-ChristopherNeural', 'Christopher (US Neural - Confident)', 'Direct, crisp and focused'),
       ('en-IE-EmilyNeural', 'Emily (Irish Neural - F.R.I.D.A.Y.)', 'Charming, brisk Irish accent'),
+      // Roman Urdu speaking voice: replies are transliterated to Urdu
+      // script before synthesis; chat stays in Roman Urdu. AsadNeural is
+      // the default whenever the reply language is Roman Urdu.
+      ('ur-PK-AsadNeural', 'Asad (Urdu Neural - Male)', 'Roman Urdu replies spoken in proper Urdu'),
+      ('ur-PK-UzmaNeural', 'Uzma (Urdu Neural - Female)', 'Roman Urdu replies spoken in proper Urdu'),
     ];
 
     return Card(
@@ -405,7 +410,10 @@ class _JarvisSettingsScreenState extends State<JarvisSettingsScreen> {
             ),
             const SizedBox(height: 4),
             Text(
-              'Select the studio human voice for Jarvis spoken responses.',
+              'Select the studio human voice for Jarvis spoken responses. '
+              'When the reply language is Roman Urdu, Asad (Urdu) is the '
+              'default — replies are spoken in Urdu while chat stays in '
+              'Roman Urdu.',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -415,7 +423,9 @@ class _JarvisSettingsScreenState extends State<JarvisSettingsScreen> {
               children: [
                 Expanded(
                   child: DropdownButtonFormField<String>(
-                    initialValue: _settings.jarvisNeuralVoice,
+                    initialValue: _settings.effectiveNeuralVoice(
+                      HermesEvolutionService.instance.replyLanguage,
+                    ),
                     isExpanded: true,
                     decoration: InputDecoration(
                       contentPadding: const EdgeInsets.symmetric(
@@ -452,8 +462,13 @@ class _JarvisSettingsScreenState extends State<JarvisSettingsScreen> {
                   tooltip: 'Test voice',
                   icon: const Icon(Icons.volume_up_rounded, size: 22),
                   onPressed: () async {
+                    final voice = _settings.effectiveNeuralVoice(
+                      HermesEvolutionService.instance.replyLanguage,
+                    );
                     await VoiceService.instance.speak(
-                      'All systems operational, sir. Standing by for your command.',
+                      voice.startsWith('ur-PK')
+                          ? 'Sab systems theek hain, sir. Main aap ki khidmat ke liye tayyar hoon.'
+                          : 'All systems operational, sir. Standing by for your command.',
                     );
                   },
                 ),
