@@ -471,7 +471,7 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             android.util.Log.e("JARVIS_VOICE", "restartRunnable failed: ${e.message}")
             safeCancelAndDestroy()
-            scheduleRestart(150L)
+            scheduleRestart(1000L)
         }
     }
 
@@ -531,13 +531,21 @@ class MainActivity : FlutterActivity() {
 
             // For all timeouts, silence, client hiccups, busy signals, audio glitches:
             // Destroy and re-arm cleanly so listening never stops!
+            // NOTE (v1.1.1): delays are deliberately generous. Restarting the
+            // recognizer 50ms after every error made the mic indicator blink
+            // on/off several times a second, and on a slow connection Google's
+            // service times out repeatedly, so the hot restart loop also kept
+            // recognition from ever completing. Backing off lets the service
+            // recover and keeps the mic held noticeably longer per session.
             safeCancelAndDestroy()
             val delay = when (error) {
                 SpeechRecognizer.ERROR_NO_MATCH,
-                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 50L
+                SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> 800L
                 SpeechRecognizer.ERROR_RECOGNIZER_BUSY,
-                SpeechRecognizer.ERROR_CLIENT -> 120L
-                else -> 250L
+                SpeechRecognizer.ERROR_CLIENT -> 1000L
+                SpeechRecognizer.ERROR_NETWORK,
+                SpeechRecognizer.ERROR_SERVER -> 2500L
+                else -> 1000L
             }
             scheduleRestart(delay)
         }
@@ -560,7 +568,9 @@ class MainActivity : FlutterActivity() {
             }
 
             if (isContinuousListening) {
-                scheduleRestart(50L)
+                // v1.1.1: 300ms breather instead of 50ms so the mic is not
+                // torn down and re-acquired in the same blink.
+                scheduleRestart(300L)
             } else {
                 mainHandler.post {
                     speechChannel?.invokeMethod("onSpeechStatus", "notListening")
@@ -604,7 +614,7 @@ class MainActivity : FlutterActivity() {
 
         override fun onEndOfSegmentedSession() {
             if (isContinuousListening) {
-                scheduleRestart(50L)
+                scheduleRestart(300L)
             }
         }
 
